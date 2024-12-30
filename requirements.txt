@@ -81,3 +81,4 @@ zipp==3.21.0
 plotly
 seaborn
 torch
+torchvision
