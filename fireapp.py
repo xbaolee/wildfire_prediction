@@ -8,6 +8,14 @@ import datetime
 #import os
 from geopy.distance import geodesic
 import uuid
+import pandas as np
+import joblib
+import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+import seaborn as sns
+import scipy.stats as stats
 
 # Constants
 #API_KEY = os.getenv("WEATHER_API_KEY")  # Use environment variable for API key
@@ -15,6 +23,53 @@ API_KEY = "231771a51df34a8db2952122242612"
 OPENWEATHERMAP_API_KEY = "9eb33c79be718292d16ec0c6bb82de86"
 #OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY") 
 OPENCAGE_API_KEY = "53a91cfacb1b486e9e14cd965fb4dcb5"  # Replace with your OpenCage API key
+
+
+import torch
+import torch.nn as nn
+
+# Define the DNN model class (same as during training)
+class DNN(nn.Module):
+    def __init__(self, input_size, hidden_layers, output_size):
+        super(DNN, self).__init__()
+        layers = []
+        in_features = input_size
+        for hidden_units in hidden_layers:
+            layers.append(nn.Linear(in_features, hidden_units))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.3))
+            in_features = hidden_units
+        layers.append(nn.Linear(in_features, output_size))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.network(x)
+    
+pipeline_cls = joblib.load("preprocessing_pipeline_cls_last.pkl")
+best_params = joblib.load("dnn_best_params.pkl")
+
+# Initialize the model with best parameters
+model = DNN(
+    input_size=best_params["input_size"],
+    hidden_layers=best_params["hidden_layers"],
+    output_size=best_params["output_size"],
+)
+
+# Load the model weights
+model.load_state_dict(torch.load("dnn_model_last.pth"))
+model.eval()  # Set model to evaluation mode
+
+def predict(input_data):
+    # Preprocess the input data using the saved pipeline
+    preprocessed_data = pipeline_cls.transform(input_data)
+    input_tensor = torch.tensor(preprocessed_data, dtype=torch.float32)
+    
+    # Perform prediction
+    with torch.no_grad():
+        output = model(input_tensor)
+        _, predicted_class = torch.max(output, 1)  # Get the class with the highest score
+    
+    return predicted_class.numpy()
 
 # State and coordinates mapping
 def get_state_boundaries():
@@ -46,6 +101,29 @@ def get_state_boundaries():
         "Wisconsin": [43.7844, -88.7879, 6], "West Virginia": [38.5976, -80.4549, 6],
         "Wyoming": [43.0759, -107.2903, 6]
     }
+
+def magnitude_to_size_class(magnitude):
+    """
+    Convert wildfire magnitude to size class.
+    - Magnitude <= 0.1: Class B
+    - 0.1 < Magnitude <= 1: Class C
+    - 1 < Magnitude <= 3: Class D
+    - 3 < Magnitude <= 10: Class E
+    - 10 < Magnitude <= 50: Class F
+    - Magnitude > 50: Class G
+    """
+    if magnitude <= 0.1:
+        return 'B'
+    elif magnitude <= 1:
+        return 'C'
+    elif magnitude <= 3:
+        return 'D'
+    elif magnitude <= 10:
+        return 'E'
+    elif magnitude <= 50:
+        return 'F'
+    else:
+        return 'G'
 
 
 # # Helper function to map wind categories to wind speed
@@ -194,230 +272,641 @@ def calculate_distance_to_station(lat, lon):
         st.error("Could not calculate distance to the nearest weather station due to missing station coordinates.")
     return None
 
+
+import json
+
+# Load thresholds
+with open('gmm_thresholds.json', 'r') as f:
+    thresholds = json.load(f)
+
+def classify_slope(value, thresholds):
+    if value < thresholds['threshold_1']:
+        return 0
+    elif value < thresholds['threshold_2']:
+        return 1
+    else:
+        return 2
+
+
 today = datetime.date.today()
 current_year, current_month, current_day = today.year, today.month, today.day
 
 
 # Load the model and preprocessing pipeline
 @st.cache(allow_output_mutation=True)
+  
+def load_model_and_pipeline():
+    # Load preprocessing pipeline and best parameters
+    pipeline_cls = joblib.load("preprocessing_pipeline_cls_last.pkl")
+    best_params = joblib.load("dnn_best_params.pkl")
+    
+    # Initialize the model
+    model = DNN(
+        input_size=best_params["input_size"],
+        hidden_layers=best_params["hidden_layers"],
+        output_size=best_params["output_size"],
+    )
+    model.load_state_dict(torch.load("dnn_model_last.pth"))
+    model.eval()  # Set model to evaluation mode
+    return model, pipeline_cls
+
 def load_model(model_name):
-    model_paths = {
-        # "DNN Model": "DNN2_with_pipeline.pkl",
-        "GMM Bayesian Model": "gmm_bayesian_with_pipeline.pkl",
-        "MLP Model": "mlp_random_model_with_pipeline.pkl",
-    }
-    model_path = model_paths.get(model_name)
-    if model_path:
-        try:
-            model = load(model_path)
-            return model, "Pipeline class loaded"  # Modify pipeline_cls based on your actual implementation
-        except Exception as e:
-            st.error(f"Failed to load model: {e}")
+        model_paths = {
+            # "DNN Model": "DNN_pipeline_cls_mh.pkl",
+            "GMM Bayesian Model": "gmm_bayesian_with_pipeline.pkl",
+            "MLP Model": "mlp_random_model_with_pipeline.pkl",
+        }
+        model_path = model_paths.get(model_name)
+        if model_path:
+            try:
+                # Load the model and pipeline together
+                model_with_pipeline = load(model_path)
+                # If the loaded object is a tuple (model, pipeline), unpack it
+                if isinstance(model_with_pipeline, tuple):
+                    model, pipeline = model_with_pipeline
+                else:
+                    # Handle case where only the model is loaded
+                    model, pipeline = model_with_pipeline, None
+                return model, pipeline
+            except Exception as e:
+                st.error(f"Failed to load model: {e}")
+                return None, None
+        else:
             return None, None
-    else:
-        st.error("Selected model is not available.")
-        return None, None
+    
+
+
     
 #model, pipeline_cls = load_model()
 
 # App Title
-st.title("Wildfire Size Prediction System")
+st.title("🌲 Wildfire Size Prediction System")
 
 # Initialize Streamlit app
 st.sidebar.title("Settings")
-selected_model = st.sidebar.selectbox(
-    "Choose a Model",
-    options=["GMM Bayesian Model", "MLP Model"],
-    index=1  # Default to "MLP Model"
+
+page = st.sidebar.selectbox(
+    "Choose a Page:",
+    ["Insights Page", "Predict Page"]
 )
 
-import copy
+if page == "Insights Page":
 
-model, pipeline_cls = copy.deepcopy(load_model(selected_model))
-
-if model and pipeline_cls:
-    st.sidebar.success(f"Loaded {selected_model}")
-else:
-    st.sidebar.error("Failed to load the selected model.")
-
-# Use tabs for organizing current and historical weather data
-tab1, tab2, tab3, tab4 = st.tabs([ "Initial Setup", "Current Weather", "Historical Weather", "Prediction"])
-with tab1:
-    # State Selection
-    state_boundaries = get_state_boundaries()
-    state = st.selectbox("Select State:", list(state_boundaries.keys()))
-    state_abbreviation = state_name_to_abbreviation[state]  # Get state abbreviation
-    state_code = state_mapping[state_abbreviation]  # Get numerical representation
-    state_center = state_boundaries[state]
-
-    # Vegetation Type
-    vegetation_mapping = get_vegetation_mapping()
-    vegetation = st.selectbox("Select Vegetation Type:", list(vegetation_mapping.keys()))
-    vegetation_code = vegetation_mapping[vegetation]
-
-
-    # Streamlit user input for Cause
-    cause = st.selectbox("Cause:", list(cause_mapping.keys()))  # Include 'Unknown' as an option
-    cause_code = cause_mapping[cause]  # Convert cause to a numerical code
-
-    # Location Selection (Map)
-    st.write("Click on the map to select a location within the selected state:")
-    m = folium.Map(location=[state_center[0], state_center[1]], zoom_start=state_center[2])
-    folium.Marker(location=[state_center[0], state_center[1]], draggable=True).add_to(m)
-    map_data = st_folium(m, key="map")
-
-    latitude, longitude = state_center[0], state_center[1]  # Default to state center
-    if map_data and map_data.get("last_clicked"):
-        last_clicked = map_data.get("last_clicked")
-        if last_clicked and "lat" in last_clicked and "lng" in last_clicked:
-            latitude, longitude = last_clicked["lat"], last_clicked["lng"]
-
-    st.write(f"Selected Coordinates: Latitude : {latitude}, Longitude : {longitude}")
-
-
-    # Optional Inputs with Skip Option
-    def input_with_skip(label, min_value=None, max_value=None, default_value=None, options=None, tooltip=None, key=None):
-        # Ensure the key is unique
-        unique_key = key if key else label.replace(" ", "_").lower()
-
-        # Add a checkbox to allow skipping the input
-        skip = st.checkbox(f"Skip", key=f"skip_{unique_key}")
-        if skip:
-            return None  # Return None to indicate the input was skipped
-
-        # Display tooltip if provided
-        if tooltip:
-            st.markdown(f"{label} <span style='color:blue;' title='{tooltip}'>?</span>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"{label}", unsafe_allow_html=True)
-
-        # Render the appropriate input widget based on the options
-        if options:
-            return st.selectbox(label, options, index=options.index(default_value) if default_value in options else 0, key=unique_key)
-
-        return st.slider(label, min_value=min_value, max_value=max_value, value=default_value, key=unique_key)
-
-with tab2:
-    st.header("Current Weather Data")
-    # Current Weather Data
-    fetch_current_weather = st.checkbox("Fetch Current Weather from API", value=True)
-    if fetch_current_weather:
-        if st.button("Fetch Current Weather", key="fetch_current_weather"):
-            weather_data = fetch_weather(latitude, longitude)
-            if weather_data:
-                st.success("Weather data fetched successfully!")
-                st.write(f"Temperature: {weather_data['temperature']} °C")
-                st.write(f"Humidity: {weather_data['humidity']}%")
-                st.write(f"Wind Speed: {weather_data['wind_speed']} m/s")
-                st.write(f"Precipitation: {weather_data['precipitation']} mm")
-            else:
-                st.error("Could not fetch weather data. Try again later.")
-    else:
-        temp_current = input_with_skip("Current Temperature (°C):", -50, 50, 20, tooltip=temp_tooltip, key="temp_current")
-        wind_current = input_with_skip("Current Wind Speed (m/s):", 0, 25, 5, tooltip=wind_tooltip, key="wind_current")
-        hum_current = input_with_skip("Current Humidity (%):", 0, 100, 50, tooltip=hum_tooltip, key="hum_current")
-        prec_current = input_with_skip("Current Precipitation (mm):", 0, 15000, 0, tooltip=prec_tooltip, key="prec_current")
-        weather_data = {
-            "temperature": temp_current,
-            "humidity": hum_current,
-            "wind_speed": wind_current,
-            "precipitation": prec_current
-        }
-
-    remoteness = calculate_remoteness(latitude, longitude)
-    if remoteness != -1:
-        st.write(f"Remoteness (distance to nearest city): {remoteness:.2f} km")
-    else:
-        st.error("Could not calculate remoteness (distance to nearest city).")
-
-    distance_to_station = calculate_distance_to_station(latitude, longitude)
-    if distance_to_station is not None:
-        st.write(f"Distance to Nearest Weather Station: {distance_to_station:.2f} km")
-    else:
-        st.error("Could not calculate distance to the nearest weather station.")
-
-with tab3:
-    # Historical Weather Data Options
-    historical_weather_data = {}
-    days_options = {"7 Days Ago": 7, "15 Days Ago": 15, "30 Days Ago": 30}
-    selected_days = st.multiselect("Select Historical Weather Periods:", list(days_options.keys()))
-
-    # Initialize historical variables with default values (in case data is skipped)
-    temp_pre_7, wind_pre_7, hum_pre_7, prec_pre_7 = None, None, None, None
-    temp_pre_15, wind_pre_15, hum_pre_15, prec_pre_15 = None, None, None, None
-    temp_pre_30, wind_pre_30, hum_pre_30, prec_pre_30 = None, None, None, None
-
-    # Fetch and process data only for selected days
-    for day_label in selected_days:
-        days_ago = days_options[day_label]
-        target_date = (datetime.datetime.utcnow() - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%d")
-        historical_weather = fetch_historical_weather(latitude, longitude, target_date)
+  
+    st.title("📊 Insights Page")
     
-        # User choice for each historical period
-        fetch_from_api = st.checkbox(f"Fetch {day_label} data from API", value=True, key=f"fetch_{day_label}_api")
-        if fetch_from_api:
-            historical_weather = fetch_historical_weather(latitude, longitude, target_date)
-            if historical_weather:
-                st.write(f"Weather {day_label}:")
-                st.write(f"Temperature: {historical_weather['temperature']} °C")
-                st.write(f"Humidity: {historical_weather['humidity']}%")
-                st.write(f"Wind Speed: {historical_weather['wind_speed']} m/s")
-                st.write(f"Precipitation: {historical_weather['precipitation']} mm")
-                historical_weather_data[day_label] = historical_weather
+    # Insights content
+    st.subheader("Dataset Insights and Hypotheses")
+    
 
-                # Assign values dynamically based on user selection
+    # Read the CSV file
+    df = pd.read_csv('cleaned_data_v4.csv')
+
+    # Display the first few rows of the dataset
+    st.subheader("Dataset Preview")
+    st.dataframe(df.head())
+
+    # Display basic statistics
+    st.subheader("Basic Statistics")
+    st.write(df.describe())
+
+    # Hypotheses
+    st.subheader("Hypotheses and Visualizations")
+
+    # 1. Hypothesis: Human-caused wildfires are more frequent than natural causes.
+    st.markdown("**Hypothesis 1:** Human-caused wildfires are more frequent than natural causes.")
+    if "Cause" in df.columns:
+        fig1 = px.histogram(
+            df, 
+            x="Cause", 
+            title="Count of Wildfire Causes", 
+            labels={"Cause": "Cause of Wildfire"}, 
+            color_discrete_sequence=["orange"]
+        )
+        fig1.update_layout(
+            xaxis_title="Cause of Wildfire",
+            yaxis_title="Number of Fires",
+            template="plotly_white",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+    else:
+        st.warning("Column 'Cause' is missing from the dataset.")
+
+    # 2. Hypothesis: Larger wildfires occur more frequently in specific states.
+    st.markdown("**Hypothesis 2:** Larger wildfires occur more frequently in specific states.")
+    if "State" in df.columns and "FireSize" in df.columns:
+        fig2 = px.box(
+            df, 
+            x="State", 
+            y="FireSize", 
+            title="Fire Size Distribution by State", 
+            labels={"State": "State", "FireSize": "Fire Size"},
+            color_discrete_sequence=["blue"]
+        )
+        fig2.update_layout(
+            xaxis_title="State",
+            yaxis_title="Fire Size",
+            template="plotly_white",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.warning("Columns 'State' or 'FireSize' are missing from the dataset.")
+
+    # 3. Hypothesis: Wildfires have become larger or more frequent over the years.
+    st.markdown("**Hypothesis 3:** Wildfires have become larger or more frequent over the years.")
+    if "DiscoveryYear" in df.columns and "FireSize" in df.columns:
+        # Trend of wildfires over the years (counts)
+        fire_counts_by_year = df.groupby("DiscoveryYear")["FireSize"].count().reset_index()
+        fig3 = px.line(
+            fire_counts_by_year, 
+            x="DiscoveryYear", 
+            y="FireSize", 
+            title="Trend of Wildfires Over the Years", 
+            labels={"DiscoveryYear": "Year", "FireSize": "Number of Wildfires"}, 
+            markers=True
+        )
+        fig3.update_traces(line_color="red", line_width=2)
+        fig3.update_layout(
+            template="plotly_white",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+
+        # Trend of average fire size over the years
+        average_fire_size_by_year = df.groupby("DiscoveryYear")["FireSize"].mean().reset_index()
+        fig4 = px.line(
+            average_fire_size_by_year, 
+            x="DiscoveryYear", 
+            y="FireSize", 
+            title="Trend of Average Fire Size Over the Years", 
+            labels={"DiscoveryYear": "Year", "FireSize": "Average Fire Size"}, 
+            markers=True
+        )
+        fig4.update_traces(line_color="blue", line_width=2)
+        fig4.update_layout(
+            template="plotly_white",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.warning("Columns 'DiscoveryYear' or 'FireSize' are missing from the dataset.")
+
+    # 4. Hypothesis: Wildfires are concentrated in certain months.
+    st.markdown("**Hypothesis 4:** Wildfires are concentrated in certain months.")
+    if "DiscoveryMonth" in df.columns:
+        fig5 = px.histogram(
+            df, 
+            x="DiscoveryMonth", 
+            nbins=12, 
+            title="Distribution of Wildfires Across Months", 
+            labels={"DiscoveryMonth": "Month"}, 
+            color_discrete_sequence=["green"]
+        )
+        fig5.update_layout(
+            xaxis_title="Month",
+            yaxis_title="Number of Wildfires",
+            template="plotly_white",
+            hovermode="x unified"
+        )
+        fig5.update_xaxes(
+            tickmode="array",
+            tickvals=list(range(1, 13)),
+            ticktext=["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        )
+        st.plotly_chart(fig5, use_container_width=True)
+    else:
+        st.warning("Column 'DiscoveryMonth' is missing from the dataset.")
+    
+    ### 5. Relationship Between Temperature, Humidity, and Wildfire Size
+    st.markdown("**Hypothesis 5:** Wildfires with larger sizes are associated with higher temperatures and lower humidity levels.")
+    if "Temp_cont" in df.columns and "Hum_cont" in df.columns and "FireSizeClass" in df.columns:
+        # Filter the dataset
+        filtered_df = df[
+            (df["Hum_cont"] != -9999) & 
+            (df["Hum_cont"] != 0) & 
+            (df["Temp_cont"] != -9999)
+        ]
+
+        # Create the scatter plot
+        fig_temp_humidity = px.scatter(
+            filtered_df,
+            x="Temp_cont",
+            y="Hum_cont",
+            color="FireSizeClass",
+            title="Temperature vs. Humidity Colored by FireSizeClass",
+            labels={"Temp_cont": "Temperature", "Hum_cont": "Humidity"},
+            opacity=0.7,
+        )
+        fig_temp_humidity.update_traces(marker=dict(size=10))
+        st.plotly_chart(fig_temp_humidity, use_container_width=True)
+    else:
+        st.warning("Columns 'Temp_cont', 'Hum_cont', or 'FireSizeClass' are missing from the dataset.")
+
+    ## 6. Weather Conditions as Predictors of Wildfire Occurrence and Size
+    # Hypothesis 6: Certain combinations of weather conditions strongly predict wildfire occurrence and size
+    st.markdown("**Hypothesis 6:** Certain combinations of weather conditions strongly predict wildfire occurrence and size.")
+
+    # Clean column names and ensure no extra spaces
+    df.columns = df.columns.str.strip()
+
+    # Define the features for the pair plot
+    selected_features = ['FireSize', 'Temp_cont', 'Wind_cont', 'Hum_cont', 'Prec_cont', 'FireSizeClass']
+
+    # Check if the selected features exist in the dataset
+    if all(col in df.columns for col in selected_features):
+        # Filter to include only the selected features
+        df_filtered = df[selected_features]
+
+        # Generate the pair plot
+        with st.spinner("Generating pair plot..."):
+            pairplot_fig = sns.pairplot(
+                df_filtered,
+                hue='FireSizeClass',
+                palette='coolwarm',
+                kind="reg",
+                diag_kind='kde',
+                height=2.5,
+                markers=["o", "s", "D", "X", "*", "^"],
+                corner=True
+            )
+
+            # Add a title to the figure
+            pairplot_fig.fig.suptitle('Relationships Between Weather Indicators and Fire Size', y=1.02)
+
+            # Display the plot using Streamlit
+            st.pyplot(pairplot_fig.fig)
+    else:
+        st.warning("Required columns are missing from the dataset. Ensure these columns are present: " + ", ".join(selected_features))
+
+
+    ## 7. Spatial Distribution of Wildfires
+    st.markdown("**Hypothesis 7:** The spatial distribution of wildfires varies across states.")
+    if "Latitude" in df.columns and "Longitude" in df.columns and "FireSizeClass" in df.columns:
+        # Static wildfire locations
+        fig_static_map = px.scatter_mapbox(
+            df,
+            lat="Latitude",
+            lon="Longitude",
+            color="FireSizeClass",
+            size="FireMagnitude" if "FireMagnitude" in df.columns else None,
+            opacity=0.5,
+            zoom=5,
+            mapbox_style="carto-positron",
+            title="Wildfire Locations (Static)"
+        )
+        st.plotly_chart(fig_static_map, use_container_width=True)
+
+        if "DiscoveryYear" in df.columns and "Latitude" in df.columns and "Longitude" in df.columns:
+            # Ensure the sequence includes all years from 2000 to 2015
+            years = list(range(2000, 2016))
+            df["DiscoveryYear"] = pd.to_numeric(df["DiscoveryYear"], errors="coerce")  # Ensure DiscoveryYear is numeric
+            df_filtered = df[(df["DiscoveryYear"] >= 2000) & (df["DiscoveryYear"] <= 2015)]
+
+            # Create a DataFrame with all years in the range to fill missing years
+            all_years_df = pd.DataFrame({"DiscoveryYear": years})
+            df_merged = all_years_df.merge(df_filtered, on="DiscoveryYear", how="left")  # Merge with original data
+
+            # Generate the animated map
+            fig_animated_map = px.scatter_mapbox(
+                df_merged,
+                lat="Latitude",
+                lon="Longitude",
+                color="FireSizeClass",
+                size="FireMagnitude" if "FireMagnitude" in df_merged.columns else None,
+                zoom=4,
+                opacity=0.7,
+                animation_frame="DiscoveryYear",
+                mapbox_style="carto-positron",
+                title="Wildfire Locations (Animated)"
+            )
+
+            # Display the map
+            st.plotly_chart(fig_animated_map, use_container_width=True)
+        else:
+            st.warning("Columns 'DiscoveryYear', 'Latitude', or 'Longitude' are missing for the animated map.")
+
+    ## 8. Distribution of Fire Sizes by Vegetation Type
+    st.markdown("**Hypothesis 8:** The distribution of fire sizes varies across different vegetation types.")
+
+    # Ensure the 'Vegetation' and 'FireSize' columns exist
+    if "Vegetation" in df.columns and "FireSize" in df.columns:
+        # Filter out rows where Vegetation is 0
+        filtered_vege_df = df[df['Vegetation'] != 0]
+
+        # Interactive violin plot with Plotly
+        fig_vege = px.violin(
+            filtered_vege_df,
+            x="Vegetation",
+            y="FireSize",
+            color="Vegetation",
+            box=True,  # Add a box plot inside the violin for additional insights
+            points="all",  # Show all points inside the violins
+            title="Distribution of Fire Sizes by Vegetation Type",
+            labels={"Vegetation": "Vegetation Type", "FireSize": "Fire Size"},
+            color_discrete_sequence=px.colors.sequential.Viridis
+        )
+
+        # Update layout for readability
+        fig_vege.update_layout(
+            xaxis_title="Vegetation Type",
+            yaxis_title="Fire Size",
+            title=dict(font=dict(size=20), x=0.5),
+            template="plotly_white",
+            width=1200,  # Adjust the width
+            height=600   # Adjust the height
+        )
+
+        # Rotate x-axis labels for better readability
+        fig_vege.update_xaxes(tickangle=45)
+
+        # Display the plot in Streamlit
+        st.plotly_chart(fig_vege, use_container_width=False)
+    else:
+        st.warning("Columns 'Vegetation' or 'FireSize' are missing from the dataset.")
+
+
+
+elif page == "Predict Page":
+
+    # Sidebar dropdown to select the model
+    selected_model = st.sidebar.selectbox(
+        "Choose a Model",
+        options=["DNN Model", "GMM Bayesian Model", "MLP Model"],  # Include DNN Model
+        index=0  # Default to DNN Model
+    )
+
+
+    import copy
+    import traceback
+
+    loaded_model = load_model(selected_model)
+
+    if selected_model == "DNN Model":
+        # Load the model and pipeline once
+        model, pipeline_cls = load_model_and_pipeline()
+
+    else:
+        model, pipeline_cls = copy.deepcopy(load_model(selected_model))
+
+    if model and pipeline_cls:
+        st.sidebar.success(f"Loaded {selected_model}")
+    else:
+        st.sidebar.error("Failed to load the selected model.")
+
+        
+    st.markdown("""
+        <style>
+        div[data-testid="stHorizontalBlock"] {
+            max-width: 100% !important;
+            padding-left: 10px !important;
+            padding-right: 10px !important;
+        }
+        div[data-testid="stTabs"] div[role="tablist"] {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        div[data-testid="stTabs"] div[role="tab"] {
+            flex: 1 1 auto;
+            padding: 10px 20px !important;
+            text-align: center;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+    # Use tabs for organizing current and historical weather data
+    tab1, tab2, tab3, tab4 = st.tabs([ "Initial Setup", "Current Weather", "Historical Weather", "Prediction"])
+    with tab1:
+        # State Selection
+        state_boundaries = get_state_boundaries()
+        state = st.selectbox("Select State:", list(state_boundaries.keys()))
+        state_abbreviation = state_name_to_abbreviation[state]  # Get state abbreviation
+        state_code = state_mapping[state_abbreviation]  # Get numerical representation
+        state_center = state_boundaries[state]
+
+        # Vegetation Type
+        vegetation_mapping = get_vegetation_mapping()
+        vegetation = st.selectbox("Select Vegetation Type:", list(vegetation_mapping.keys()))
+        vegetation_code = vegetation_mapping[vegetation]
+
+
+        # Streamlit user input for Cause
+        cause = st.selectbox("Cause:", list(cause_mapping.keys()))  # Include 'Unknown' as an option
+        cause_code = cause_mapping[cause]  # Convert cause to a numerical code
+
+        # Location Selection (Map)
+        st.write("Click on the map to select a location within the selected state:")
+        m = folium.Map(location=[state_center[0], state_center[1]], zoom_start=state_center[2])
+        folium.Marker(location=[state_center[0], state_center[1]], draggable=True).add_to(m)
+        map_data = st_folium(m, key="map")
+
+        latitude, longitude = state_center[0], state_center[1]  # Default to state center
+        if map_data and map_data.get("last_clicked"):
+            last_clicked = map_data.get("last_clicked")
+            if last_clicked and "lat" in last_clicked and "lng" in last_clicked:
+                latitude, longitude = last_clicked["lat"], last_clicked["lng"]
+
+        st.write(f"Selected Coordinates: Latitude : {latitude}, Longitude : {longitude}")
+
+
+        # Optional Inputs with Skip Option
+        def input_with_skip(label, min_value=None, max_value=None, default_value=None, options=None, tooltip=None, key=None):
+            # Ensure the key is unique
+            unique_key = key if key else label.replace(" ", "_").lower()
+
+            # Add a checkbox to allow skipping the input
+            skip = st.checkbox(f"Skip", key=f"skip_{unique_key}")
+            if skip:
+                return None  # Return None to indicate the input was skipped
+
+            # Display tooltip if provided
+            if tooltip:
+                st.markdown(f"{label} <span style='color:blue;' title='{tooltip}'>?</span>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"{label}", unsafe_allow_html=True)
+
+            # Render the appropriate input widget based on the options
+            if options:
+                return st.selectbox(label, options, index=options.index(default_value) if default_value in options else 0, key=unique_key)
+
+            return st.slider(label, min_value=min_value, max_value=max_value, value=default_value, key=unique_key)
+
+    with tab2:
+        st.header("Current Weather Data")
+        # Current Weather Data
+        fetch_current_weather = st.checkbox("Fetch Current Weather from API", value=True)
+        if fetch_current_weather:
+            if st.button("Fetch Current Weather", key="fetch_current_weather"):
+                weather_data = fetch_weather(latitude, longitude)
+                if weather_data:
+                    st.success("Weather data fetched successfully!")
+                    st.write(f"Temperature: {weather_data['temperature']} °C")
+                    st.write(f"Humidity: {weather_data['humidity']}%")
+                    st.write(f"Wind Speed: {weather_data['wind_speed']} m/s")
+                    st.write(f"Precipitation: {weather_data['precipitation']} mm")
+                else:
+                    st.error("Could not fetch weather data. Try again later.")
+        else:
+            temp_current = input_with_skip("Current Temperature (°C):", -50, 50, 20, tooltip=temp_tooltip, key="temp_current")
+            wind_current = input_with_skip("Current Wind Speed (m/s):", 0, 25, 5, tooltip=wind_tooltip, key="wind_current")
+            hum_current = input_with_skip("Current Humidity (%):", 0, 100, 50, tooltip=hum_tooltip, key="hum_current")
+            prec_current = input_with_skip("Current Precipitation (mm):", 0, 15000, 0, tooltip=prec_tooltip, key="prec_current")
+            weather_data = {
+                "temperature": temp_current,
+                "humidity": hum_current,
+                "wind_speed": wind_current,
+                "precipitation": prec_current
+            }
+
+        remoteness = calculate_remoteness(latitude, longitude)
+        if remoteness != -1:
+            st.write(f"Remoteness (distance to nearest city): {remoteness:.2f} km")
+        else:
+            st.error("Could not calculate remoteness (distance to nearest city).")
+
+        distance_to_station = calculate_distance_to_station(latitude, longitude)
+        if distance_to_station is not None:
+            st.write(f"Distance to Nearest Weather Station: {distance_to_station:.2f} km")
+        else:
+            st.error("Could not calculate distance to the nearest weather station.")
+
+    with tab3:
+        st.header("Historical Weather Data")
+        # Historical Weather Data Options
+        historical_weather_data = {}
+        days_options = {"7 Days Ago": 7, "15 Days Ago": 15, "30 Days Ago": 30}
+        selected_days = st.multiselect("Select Historical Weather Periods:", list(days_options.keys()))
+
+        # Initialize historical variables with default values (in case data is skipped)
+        temp_pre_7, wind_pre_7, hum_pre_7, prec_pre_7 = None, None, None, None
+        temp_pre_15, wind_pre_15, hum_pre_15, prec_pre_15 = None, None, None, None
+        temp_pre_30, wind_pre_30, hum_pre_30, prec_pre_30 = None, None, None, None
+
+        # Fetch and process data only for selected days
+        for day_label in selected_days:
+            days_ago = days_options[day_label]
+            target_date = (datetime.datetime.utcnow() - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            historical_weather = fetch_historical_weather(latitude, longitude, target_date)
+        
+            # User choice for each historical period
+            fetch_from_api = st.checkbox(f"Fetch {day_label} data from API", value=True, key=f"fetch_{day_label}_api")
+            if fetch_from_api:
+                historical_weather = fetch_historical_weather(latitude, longitude, target_date)
+                if historical_weather:
+                    st.write(f"Weather {day_label}:")
+                    st.write(f"Temperature: {historical_weather['temperature']} °C")
+                    st.write(f"Humidity: {historical_weather['humidity']}%")
+                    st.write(f"Wind Speed: {historical_weather['wind_speed']} m/s")
+                    st.write(f"Precipitation: {historical_weather['precipitation']} mm")
+                    historical_weather_data[day_label] = historical_weather
+
+                    # Assign values dynamically based on user selection
+                    if day_label == "7 Days Ago":
+                        temp_pre_7 = historical_weather["temperature"]
+                        wind_pre_7 = historical_weather["wind_speed"]
+                        hum_pre_7 = historical_weather["humidity"]
+                        prec_pre_7 = historical_weather["precipitation"]
+                    
+                    if day_label == "15 Days Ago":
+                        temp_pre_15 = historical_weather["temperature"]
+                        wind_pre_15 = historical_weather["wind_speed"]
+                        hum_pre_15 = historical_weather["humidity"]
+                        prec_pre_15 = historical_weather["precipitation"]
+
+                    if day_label == "30 Days Ago":
+                        temp_pre_30 = historical_weather["temperature"]
+                        wind_pre_30 = historical_weather["wind_speed"]
+                        hum_pre_30 = historical_weather["humidity"]
+                        prec_pre_30 = historical_weather["precipitation"]
+
+            else:
+                # Manually input weather data
+                temp = input_with_skip(f"Temperature {day_label} (°C):", -50, 50, 20, key=f"temp_{day_label}")
+                wind = input_with_skip(f"Wind Speed {day_label} (m/s):", 0, 25, 5, key=f"wind_{day_label}")
+                hum = input_with_skip(f"Humidity {day_label} (%):", 0, 100, 50, key=f"hum_{day_label}")
+                prec = input_with_skip(f"Precipitation {day_label} (mm):", 0, 15000, 0, key=f"prec_{day_label}")
+            
                 if day_label == "7 Days Ago":
-                    temp_pre_7 = historical_weather["temperature"]
-                    wind_pre_7 = historical_weather["wind_speed"]
-                    hum_pre_7 = historical_weather["humidity"]
-                    prec_pre_7 = historical_weather["precipitation"]
+                    temp_pre_7 = temp
+                    wind_pre_7 = wind
+                    hum_pre_7 = hum
+                    prec_pre_7 = prec
                 
                 if day_label == "15 Days Ago":
-                    temp_pre_15 = historical_weather["temperature"]
-                    wind_pre_15 = historical_weather["wind_speed"]
-                    hum_pre_15 = historical_weather["humidity"]
-                    prec_pre_15 = historical_weather["precipitation"]
+                    temp_pre_15 = temp
+                    wind_pre_15 = wind
+                    hum_pre_15 = hum
+                    prec_pre_15 = prec
 
                 if day_label == "30 Days Ago":
-                    temp_pre_30 = historical_weather["temperature"]
-                    wind_pre_30 = historical_weather["wind_speed"]
-                    hum_pre_30 = historical_weather["humidity"]
-                    prec_pre_30 = historical_weather["precipitation"]
+                    temp_pre_30 = temp
+                    wind_pre_30 = wind
+                    hum_pre_30 = hum
+                    prec_pre_30 = prec
 
+                # Store manually entered data in the historical_weather_data dictionary
+                historical_weather_data[day_label] = {
+                    "temperature": temp,
+                    "wind_speed": wind,
+                    "humidity": hum,
+                    "precipitation": prec
+                }
+                
+        st.markdown("<hr style='border: 1px solid #ccc; margin: 20px 0;'>", unsafe_allow_html=True)
+        # Plotting Section
+        st.subheader("Weather Trends")
+        if historical_weather_data:
+            # Define the proper order for time periods
+            time_period_order = ["30 Days Ago", "15 Days Ago", "7 Days Ago"]
+
+            # Create a DataFrame with only selected periods
+            df = pd.DataFrame(historical_weather_data).transpose()
+            df = df.loc[df.index.intersection(selected_days)]  # Filter based on selected days
+
+            # Reorder the DataFrame based on the predefined time period order
+            df = df.loc[sorted(df.index, key=lambda x: time_period_order.index(x))]
+
+            # Generate all graphs for weather data
+            weather_metrics = {
+                "temperature": {"color": "cyan", "ylabel": "Temperature (°C)"},
+                "humidity": {"color": "blue", "ylabel": "Humidity (%)"},
+                "wind_speed": {"color": "orange", "ylabel": "Wind Speed (m/s)"},
+                "precipitation": {"color": "purple", "ylabel": "Precipitation (mm)"}
+            }
+
+            for metric, details in weather_metrics.items():
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=df.index,
+                    y=df[metric],
+                    mode='lines+markers',
+                    name=details["ylabel"],
+                    line=dict(color=details["color"], width=3),
+                    marker=dict(size=10)
+                ))
+                fig.update_layout(
+                    title=f"{details['ylabel']} Trends",
+                    xaxis_title="Time Period",
+                    yaxis_title=details["ylabel"],
+                    xaxis=dict(tickvals=df.index, tickangle=-45),
+                    template="plotly_dark",
+                    hovermode="x unified",
+                    height=400  # Adjust height for better spacing
+                )
+                st.plotly_chart(fig, use_container_width=True)
         else:
-        
-            temp= input_with_skip(f"Temperature {day_label} (°C):", -50, 50, 20,  key=f"temp_{day_label}")
-            wind = input_with_skip(f"Wind Speed {day_label} (m/s):", 0, 25, 5, key=f"wind_{day_label}")
-            hum = input_with_skip(f"Humidity {day_label} (%):", 0, 100, 50, key=f"hum_{day_label}")
-            prec = input_with_skip(f"Precipitation {day_label} (mm):", 0, 15000, 0, key=f"prec_{day_label}")
-        
-            if day_label == "7 Days Ago":
-                temp_pre_7 = temp
-                wind_pre_7 = wind
-                hum_pre_7 = hum
-                prec_pre_7 = prec
-            
-            if day_label == "15 Days Ago":
-                temp_pre_15 = temp
-                wind_pre_15 = wind
-                hum_pre_15 = hum
-                prec_pre_15 = prec
+            st.warning("No historical weather data available for visualization.")
 
-            if day_label == "30 Days Ago":
-                temp_pre_30 = temp
-                wind_pre_30 = wind
-                hum_pre_30 = hum
-                prec_pre_30 = prec
 
-with tab4:
-    st.header("Make Prediction")
-   # input_form = st.form(key="prediction_form")
-
-    # discovery_time = 14 # median
-    # containment_time = 16 # median
-
-    with st.form(key="prediction_form"):
-        st.markdown("### Review your inputs and make a prediction.")
+    with tab4:
+        st.header("Make Prediction")
+        input_form = st.form(key="prediction_form")
+        # discovery_time = 14 # median
+        # containment_time = 16 # median
 
         discovery_time = input_with_skip("Discovery Time (hour):", 0, 24, 14)
         containment_time = input_with_skip("Containment Time (hour):", 0, 24, 16)
@@ -462,6 +951,9 @@ with tab4:
             containment_month = containment_date.month
             containment_day = containment_date.day
 
+            # Validate containment date
+            if containment_date < discovery_date:
+                st.error("Containment date must be after discovery date.")
         else:
             # Skip option is checked, default containment date is today
             containment_date = datetime.date.today()
@@ -478,56 +970,123 @@ with tab4:
                 containment_month = containment_date.month
                 containment_day = containment_date.day
 
-        #if input_form.form_submit_button("Predict"):
-        # Ensure containment date is after discovery date
 
-            if containment_date < discovery_date:
-                st.error("Containment date must be after discovery date.")
-                # Prediction Button
-            
-        predict_button = st.form_submit_button("Predict")
-        
-        # Execute prediction on button click
-        if predict_button:
-            # Prepare DataFrame
-            user_data = pd.DataFrame([[
-                discovery_time, containment_time, latitude, longitude, putout_time,
-                distance_to_station,  weather_data['temperature'] if 'weather_data' in locals() and weather_data else 20, 
-                weather_data['wind_speed'] if 'weather_data' in locals() and weather_data else 5,
-                weather_data['humidity'] if 'weather_data' in locals() and weather_data else 50,
-                weather_data['precipitation'] if 'weather_data' in locals() and weather_data else 0,
-                cause_code, state_code, vegetation_code, discovery_year, discovery_month, discovery_day,
-                containment_year, containment_month, containment_day, temp_pre_7, wind_pre_7, hum_pre_7, prec_pre_7,
-                temp_pre_15, wind_pre_15, hum_pre_15, prec_pre_15,
-                temp_pre_30, wind_pre_30, hum_pre_30, prec_pre_30, 
-                remoteness,  temp_cont, hum_cont, prec_cont, wind_cont
-            ]], columns=[
-                "DiscoveryTime", "ContainmentTime", "Latitude", "Longitude", "PutoutTime",
-                "DistanceToStation", "Temperature", "WindSpeed", "Humidity", "Precipitation",
-                "Cause","State", "Vegetation","DiscoveryYear", "DiscoveryMonth", "DiscoveryDay",
-                "ContainmentYear", "ContainmentMonth", "ContainmentDay","Temp_pre_7", "Wind_pre_7", "Hum_pre_7", "Prec_pre_7", 
-                "Temp_pre_15", "Wind_pre_15", "Hum_pre_15", "Prec_pre_15",
-                "Temp_pre_30", "Wind_pre_30", "Hum_pre_30", "Prec_pre_30",
-                "Remoteness", "Temp_cont", "Hum_cont", "Prec_cont", "Wind_cont"
-            ])
-            
-            # Fill missing values with default values
-            user_data.fillna({
-                "DiscoveryTime": 14, "ContainmentTime": 16, 
-                "Latitude": state_center[0], "Longitude": state_center[1], 
-                "Temperature": 20, "WindSpeed": 5, "Humidity": 50, "Precipitation": 0,
-                "Cause": 0, "State": state_code, "Vegetation": 0, "DiscoveryYear": 2020, "DiscoveryMonth": 6, "DiscoveryDay": 15,
-                "ContainmentYear": 2020, "ContainmentMonth": 6, "ContainmentDay": 20, "Temp_pre_7": 20, "Wind_pre_7": 5, "Hum_pre_7": 50, "Prec_pre_7": 0,
-                "Temp_pre_15": 20, "Wind_pre_15": 5, "Hum_pre_15": 50, "Prec_pre_15": 0, "Temp_pre_30": 20, "Wind_pre_30": 5, "Hum_pre_30": 50, "Prec_pre_30": 0,
-                "Remoteness": 0.5, "Temp_cont": 25, "Hum_cont": 50, "Prec_cont": 10, "Wind_cont": 0
-            }, inplace=True)
-            try:
-                # Process and predict
-                user_data_preprocessed = pipeline_cls.transform(user_data)
-                prediction = model.predict(user_data_preprocessed)
-                st.success(f"Predicted Wildfire Size Class: {prediction[0]}")
-            except Exception as e:
-                st.error(f"Error during prediction: {e}")
+        # Prepare DataFrame
+        user_data = pd.DataFrame([[
+            discovery_time, containment_time, latitude, longitude, putout_time,
+            distance_to_station,  weather_data['temperature'] if 'weather_data' in locals() and weather_data else 20, 
+            weather_data['wind_speed'] if 'weather_data' in locals() and weather_data else 5,
+            weather_data['humidity'] if 'weather_data' in locals() and weather_data else 50,
+            weather_data['precipitation'] if 'weather_data' in locals() and weather_data else 0,
+            cause_code, state_code, vegetation_code, discovery_year, discovery_month, discovery_day,
+            containment_year, containment_month, containment_day, temp_pre_7, wind_pre_7, hum_pre_7, prec_pre_7,
+            temp_pre_15, wind_pre_15, hum_pre_15, prec_pre_15,
+            temp_pre_30, wind_pre_30, hum_pre_30, prec_pre_30, 
+            remoteness,  temp_cont, hum_cont, prec_cont, wind_cont
+        ]], columns=[
+            "DiscoveryTime", "ContainmentTime", "Latitude", "Longitude", "PutoutTime",
+            "DistanceToStation", "Temperature", "WindSpeed", "Humidity", "Precipitation",
+            "Cause","State", "Vegetation","DiscoveryYear", "DiscoveryMonth", "DiscoveryDay",
+            "ContainmentYear", "ContainmentMonth", "ContainmentDay","Temp_pre_7", "Wind_pre_7", "Hum_pre_7", "Prec_pre_7", 
+            "Temp_pre_15", "Wind_pre_15", "Hum_pre_15", "Prec_pre_15",
+            "Temp_pre_30", "Wind_pre_30", "Hum_pre_30", "Prec_pre_30",
+            "Remoteness", "Temp_cont", "Hum_cont", "Prec_cont", "Wind_cont"
+        ])
 
+        # Fill missing values with default values
+        user_data.fillna({
+            "DiscoveryTime": 14, "ContainmentTime": 16, 
+            "Latitude": state_center[0], "Longitude": state_center[1], 
+            "Temperature": 20, "WindSpeed": 5, "Humidity": 50, "Precipitation": 0,
+            "Cause": 0, "State": state_code, "Vegetation": 0, "DiscoveryYear": 2020, "DiscoveryMonth": 6, "DiscoveryDay": 15,
+            "ContainmentYear": 2020, "ContainmentMonth": 6, "ContainmentDay": 20, "Temp_pre_7": 20, "Wind_pre_7": 5, "Hum_pre_7": 50, "Prec_pre_7": 0,
+            "Temp_pre_15": 20, "Wind_pre_15": 5, "Hum_pre_15": 50, "Prec_pre_15": 0, "Temp_pre_30": 20, "Wind_pre_30": 5, "Hum_pre_30": 50, "Prec_pre_30": 0,
+            "Remoteness": 0.5, "Temp_cont": 25, "Hum_cont": 50, "Prec_cont": 10, "Wind_cont": 0
+        }, inplace=True)
 
+        if st.button("Predict Wildfire Size"):
+            if selected_model == 'DNN Model':
+                try:
+                    # Preprocess user input data
+                    user_data_preprocessed = pipeline_cls.transform(user_data)
+
+                    # Perform prediction
+                    predicted_class = predict(user_data)
+                    class_mapping = {0: "B", 1: "C", 2: "D", 3: "E", 4: "F", 5: "G"}
+                    predicted_class_label = class_mapping[predicted_class[0]]
+                    
+                    st.success(f"Predicted Wildfire Size Class: {predicted_class_label}")
+                except Exception as e:
+                    st.error(f"Error during prediction: {e}")
+
+            elif selected_model == "MLP Model":
+                try:
+                    # Process input data using the pipeline
+                    user_data_preprocessed = pipeline_cls.transform(user_data)
+
+                    # MLP model logic
+                    if user_data_preprocessed.shape[1] != 100:
+                        st.error("Feature mismatch: The model expects 100 features.")
+                        st.stop()
+
+                    # Predict using the MLP model
+                    prediction = model.predict(user_data_preprocessed)
+
+                    # Handle classification output
+                    if isinstance(prediction[0], str):
+                        # Direct class label prediction
+                        st.success(f"Predicted Wildfire Size Class: {prediction[0]}")
+                    elif isinstance(prediction[0], (int, np.integer)):
+                        # Numeric prediction, map to class labels
+                        class_labels = ['B', 'C', 'D', 'E', 'F', 'G']
+                        if 0 <= int(prediction[0]) < len(class_labels):
+                            prediction_label = class_labels[int(prediction[0])]
+                            st.success(f"Predicted Wildfire Size Class: {prediction_label}")
+                        else:
+                            raise ValueError(f"Prediction index {prediction[0]} is out of bounds for class labels.")
+                    else:
+                        raise ValueError(f"Unexpected prediction type: {type(prediction[0])}. Prediction: {prediction[0]}")
+
+                except Exception as e:
+                    import traceback
+                    st.error(f"Error during prediction: {e}")
+                    st.error("Detailed stack trace:")
+                    st.error(traceback.format_exc())
+
+            else:  # Handle GMM Model or any other
+                try:
+                    # Process input data using the pipeline
+                    user_data_preprocessed = pipeline_cls.transform(user_data)
+
+                    # Extract DistanceToStation value from the user input
+                    distance_to_station = user_data['DistanceToStation'].iloc[0]
+
+                    # Dynamically calculate Slope_Class using the saved thresholds
+                    slope_class_pred = int(classify_slope(distance_to_station, thresholds))
+
+                    # Add Slope_Class as a new feature
+                    import numpy as np
+                    if isinstance(user_data_preprocessed, pd.DataFrame):
+                        user_data_preprocessed = user_data_preprocessed.values  # Convert to numpy array if it is a DataFrame
+                    user_data_final = np.hstack((user_data_preprocessed, [[slope_class_pred]]))
+
+                    # Predict using the GMM model
+                    prediction = model.predict(user_data_final)
+                    
+
+                    # Convert regression magnitude to size class
+                    if isinstance(prediction[0], (float, np.float64)):
+                        size_class = magnitude_to_size_class(prediction[0])  # Convert magnitude to size class
+                        st.success(f"Predicted Fire Magnitude: {prediction[0]}")
+                        st.success(f"Predicted Wildfire Size Class: {size_class}")
+                    elif isinstance(prediction[0], str):
+                        st.success(f"Predicted Wildfire Size Class: {prediction[0]}")
+                    else:
+                        raise ValueError(f"Unexpected prediction type: {type(prediction[0])}. Prediction: {prediction[0]}")
+
+                except Exception as e:
+                    import traceback
+                    st.error(f"Error during prediction: {e}")
+                    st.error("Detailed stack trace:")
+                    st.error(traceback.format_exc())
 
