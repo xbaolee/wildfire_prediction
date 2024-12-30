@@ -80,3 +80,4 @@ xyzservices==2024.9.0
 zipp==3.21.0
 plotly
 seaborn
+torch
