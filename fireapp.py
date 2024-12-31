@@ -944,9 +944,16 @@ elif page == "Predict Page":
 
         if not skip_containment:
             
-            # User provides containment date via calendar input
-            containment_date = st.date_input("Containment Date", min_value=discovery_date, value=datetime.date.today(), key="containment_date")
-        # Extract year, month, and day for containment date
+            today = datetime.date.today()
+            default_containment_date = today if discovery_date <= today else discovery_date
+
+            containment_date = st.date_input(
+                "Containment Date", 
+                min_value=discovery_date, 
+                value=default_containment_date, 
+                key="containment_date"
+            )
+            # Extract year, month, and day for containment date
             containment_year = containment_date.year
             containment_month = containment_date.month
             containment_day = containment_date.day
