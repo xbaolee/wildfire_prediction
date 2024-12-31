@@ -559,9 +559,10 @@ if page == "Insights Page":
     else:
         st.warning("Required columns are missing from the dataset. Ensure these columns are present: " + ", ".join(selected_features))
 
-    # Hypothesis 7: The spatial distribution of wildfires varies across states.
-    st.markdown("**Hypothesis 7:** The spatial distribution of wildfires varies across states.")
 
+    # Hypothesis 7: The spatial distribution of wildfires varies across states.
+    st.markdown("*Hypothesis 7:* The spatial distribution of wildfires varies across states.")
+    
     if "Latitude" in df.columns and "Longitude" in df.columns and "FireSizeClass" in df.columns:
         # Ensure FireSizeClass follows a predefined order
         fire_size_order = ["B", "C", "D", "E", "F", "G"]
@@ -581,20 +582,21 @@ if page == "Insights Page":
             opacity=0.5,
             zoom=5,
             mapbox_style="carto-positron",
-            title="Wildfire Locations (Static)"
+            title="Wildfire Locations (Static)",
+            category_orders={"FireSizeClass": fire_size_order}  # Ensure FireSizeClass follows the desired order
         )
         st.plotly_chart(fig_static_map, use_container_width=True)
-
+    
         if "DiscoveryYear" in df.columns and "Latitude" in df.columns and "Longitude" in df.columns:
             # Ensure the sequence includes all years from 2000 to 2015
             years = list(range(2000, 2016))
             df["DiscoveryYear"] = pd.to_numeric(df["DiscoveryYear"], errors="coerce")  # Ensure DiscoveryYear is numeric
             df_filtered = df[(df["DiscoveryYear"] >= 2000) & (df["DiscoveryYear"] <= 2015)]
-
+    
             # Create a DataFrame with all years in the range to fill missing years
             all_years_df = pd.DataFrame({"DiscoveryYear": years})
             df_merged = all_years_df.merge(df_filtered, on="DiscoveryYear", how="left")  # Merge with original data
-
+    
             # Generate the animated map
             fig_animated_map = px.scatter_mapbox(
                 df_merged,
@@ -606,16 +608,17 @@ if page == "Insights Page":
                 opacity=0.7,
                 animation_frame="DiscoveryYear",
                 mapbox_style="carto-positron",
-                title="Wildfire Locations (Animated)"
+                title="Wildfire Locations (Animated)",
+                category_orders={"FireSizeClass": fire_size_order}  # Ensure FireSizeClass follows the desired order
             )
-
+    
             # Display the map
             st.plotly_chart(fig_animated_map, use_container_width=True)
         else:
             st.warning("Columns 'DiscoveryYear', 'Latitude', or 'Longitude' are missing for the animated map.")
     else:
         st.warning("Columns 'Latitude', 'Longitude', or 'FireSizeClass' are missing from the dataset.")
-
+        
     ## 8. Distribution of Fire Sizes by Vegetation Type
     st.markdown("**Hypothesis 8:** The distribution of fire sizes varies across different vegetation types.")
 
