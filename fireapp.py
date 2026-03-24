@@ -483,16 +483,27 @@ if page == "Insights Page":
     else:
         st.warning("Column 'DiscoveryMonth' is missing from the dataset.")
     
-    ### 5. Relationship Between Temperature, Humidity, and Wildfire Size
     st.markdown("**Hypothesis 5:** Wildfires with larger sizes are associated with higher temperatures and lower humidity levels.")
+    # Check for necessary columns
     if "Temp_cont" in df.columns and "Hum_cont" in df.columns and "FireSizeClass" in df.columns:
-        # Filter the dataset
+        # Filter the dataset for valid values
         filtered_df = df[
             (df["Hum_cont"] != -9999) & 
             (df["Hum_cont"] != 0) & 
             (df["Temp_cont"] != -9999)
         ]
-
+        
+        # Define the FireSizeClass order
+        fire_size_order = ["B", "C", "D", "E", "F", "G", "H"]
+        
+        # Ensure FireSizeClass follows the defined order
+        filtered_df["FireSizeClass"] = pd.Categorical(
+            filtered_df["FireSizeClass"], 
+            categories=fire_size_order, 
+            ordered=True
+        )
+        filtered_df = filtered_df.sort_values("FireSizeClass")
+        
         # Create the scatter plot
         fig_temp_humidity = px.scatter(
             filtered_df,
@@ -502,13 +513,13 @@ if page == "Insights Page":
             title="Temperature vs. Humidity Colored by FireSizeClass",
             labels={"Temp_cont": "Temperature", "Hum_cont": "Humidity"},
             opacity=0.7,
+            category_orders={"FireSizeClass": fire_size_order}
         )
         fig_temp_humidity.update_traces(marker=dict(size=10))
         st.plotly_chart(fig_temp_humidity, use_container_width=True)
     else:
         st.warning("Columns 'Temp_cont', 'Hum_cont', or 'FireSizeClass' are missing from the dataset.")
 
-    ## 6. Weather Conditions as Predictors of Wildfire Occurrence and Size
     # Hypothesis 6: Certain combinations of weather conditions strongly predict wildfire occurrence and size
     st.markdown("**Hypothesis 6:** Certain combinations of weather conditions strongly predict wildfire occurrence and size.")
 
@@ -522,9 +533,18 @@ if page == "Insights Page":
     if all(col in df.columns for col in selected_features):
         # Filter to include only the selected features
         df_filtered = df[selected_features]
-
+        
+        # Ensure FireSizeClass follows a predefined order
+        fire_size_order = ["B", "C", "D", "E", "F", "G", "H"]
+        df_filtered["FireSizeClass"] = pd.Categorical(
+            df_filtered["FireSizeClass"], 
+            categories=fire_size_order, 
+            ordered=True
+        )
+        
         # Generate the pair plot
         with st.spinner("Generating pair plot..."):
+            # Use a single marker for simplicity
             pairplot_fig = sns.pairplot(
                 df_filtered,
                 hue='FireSizeClass',
@@ -532,10 +552,9 @@ if page == "Insights Page":
                 kind="reg",
                 diag_kind='kde',
                 height=2.5,
-                markers=["o", "s", "D", "X", "*", "^"],
+                markers="o",  # Single marker used for all hue levels
                 corner=True
             )
-
             # Add a title to the figure
             pairplot_fig.fig.suptitle('Relationships Between Weather Indicators and Fire Size', y=1.02)
 
@@ -545,9 +564,18 @@ if page == "Insights Page":
         st.warning("Required columns are missing from the dataset. Ensure these columns are present: " + ", ".join(selected_features))
 
 
-    ## 7. Spatial Distribution of Wildfires
-    st.markdown("**Hypothesis 7:** The spatial distribution of wildfires varies across states.")
+    # Hypothesis 7: The spatial distribution of wildfires varies across states.
+    st.markdown("*Hypothesis 7:* The spatial distribution of wildfires varies across states.")
+    
     if "Latitude" in df.columns and "Longitude" in df.columns and "FireSizeClass" in df.columns:
+        # Ensure FireSizeClass follows a predefined order
+        fire_size_order = ["B", "C", "D", "E", "F", "G"]
+        df["FireSizeClass"] = pd.Categorical(
+            df["FireSizeClass"], 
+            categories=fire_size_order, 
+            ordered=True
+        )
+        
         # Static wildfire locations
         fig_static_map = px.scatter_mapbox(
             df,
@@ -558,20 +586,21 @@ if page == "Insights Page":
             opacity=0.5,
             zoom=5,
             mapbox_style="carto-positron",
-            title="Wildfire Locations (Static)"
+            title="Wildfire Locations (Static)",
+            category_orders={"FireSizeClass": fire_size_order}  # Ensure FireSizeClass follows the desired order
         )
         st.plotly_chart(fig_static_map, use_container_width=True)
-
+    
         if "DiscoveryYear" in df.columns and "Latitude" in df.columns and "Longitude" in df.columns:
             # Ensure the sequence includes all years from 2000 to 2015
             years = list(range(2000, 2016))
             df["DiscoveryYear"] = pd.to_numeric(df["DiscoveryYear"], errors="coerce")  # Ensure DiscoveryYear is numeric
             df_filtered = df[(df["DiscoveryYear"] >= 2000) & (df["DiscoveryYear"] <= 2015)]
-
+    
             # Create a DataFrame with all years in the range to fill missing years
             all_years_df = pd.DataFrame({"DiscoveryYear": years})
             df_merged = all_years_df.merge(df_filtered, on="DiscoveryYear", how="left")  # Merge with original data
-
+    
             # Generate the animated map
             fig_animated_map = px.scatter_mapbox(
                 df_merged,
@@ -583,32 +612,70 @@ if page == "Insights Page":
                 opacity=0.7,
                 animation_frame="DiscoveryYear",
                 mapbox_style="carto-positron",
-                title="Wildfire Locations (Animated)"
+                title="Wildfire Locations (Animated)",
+                category_orders={"FireSizeClass": fire_size_order}  # Ensure FireSizeClass follows the desired order
             )
-
+    
             # Display the map
             st.plotly_chart(fig_animated_map, use_container_width=True)
         else:
             st.warning("Columns 'DiscoveryYear', 'Latitude', or 'Longitude' are missing for the animated map.")
-
+    else:
+        st.warning("Columns 'Latitude', 'Longitude', or 'FireSizeClass' are missing from the dataset.")
+        
     ## 8. Distribution of Fire Sizes by Vegetation Type
     st.markdown("**Hypothesis 8:** The distribution of fire sizes varies across different vegetation types.")
 
     # Ensure the 'Vegetation' and 'FireSize' columns exist
     if "Vegetation" in df.columns and "FireSize" in df.columns:
+        # Vegetation mapping
+        vegetation_mapping = {
+            1: 'Tropical Evergreen\n Broadleaf Forest',
+            2: 'Tropical Deciduous\n Broadleaf Forest',
+            3: 'Temperate Evergreen\n Broadleaf Forest',
+            4: 'Temperate Evergreen\n Needleleaf Forest',
+            5: 'Temperate Deciduous\n Broadleaf Forest',
+            6: 'Boreal Evergreen\n Needleleaf Forest',
+            7: 'Boreal Deciduous\n Needleleaf Forest',
+            8: 'Savanna',
+            9: 'C3 Grassland\n/Steppe',
+            10: 'C4 Grassland\n/Steppe',
+            11: 'Dense\n Shrubland',
+            12: 'Open\n Shrubland',
+            13: 'Tundra',
+            14: 'Desert',
+            15: 'Polar Desert/Rock\n/Ice',
+            16: 'Secondary Tropical Evergreen \nBroadleaf Forest',
+            17: 'Secondary Tropical Deciduous \nBroadleaf Forest',
+            18: 'Secondary Temperate Evergreen \nBroadleaf Forest',
+            19: 'Secondary Temperate Evergreen \nNeedleleaf Forest',
+            20: 'Secondary Temperate Deciduous \nBroadleaf Forest',
+            21: 'Secondary Boreal \nEvergreen Needleleaf Forest',
+            22: 'Secondary Boreal \nDeciduous Needleleaf Forest',
+            23: 'Water/Rivers',
+            24: 'C3 Cropland',
+            25: 'C4 Cropland',
+            26: 'C3 Pastureland',
+            27: 'C4 Pastureland',
+            28: 'Urban Land'
+        }
+
         # Filter out rows where Vegetation is 0
         filtered_vege_df = df[df['Vegetation'] != 0]
+
+        # Map vegetation codes to descriptive names
+        filtered_vege_df['Vegetation_Type'] = filtered_vege_df['Vegetation'].map(vegetation_mapping)
 
         # Interactive violin plot with Plotly
         fig_vege = px.violin(
             filtered_vege_df,
-            x="Vegetation",
+            x="Vegetation_Type",
             y="FireSize",
-            color="Vegetation",
+            color="Vegetation_Type",
             box=True,  # Add a box plot inside the violin for additional insights
             points="all",  # Show all points inside the violins
             title="Distribution of Fire Sizes by Vegetation Type",
-            labels={"Vegetation": "Vegetation Type", "FireSize": "Fire Size"},
+            labels={"Vegetation_Type": "Vegetation Type", "FireSize": "Fire Size"},
             color_discrete_sequence=px.colors.sequential.Viridis
         )
 
@@ -629,6 +696,7 @@ if page == "Insights Page":
         st.plotly_chart(fig_vege, use_container_width=False)
     else:
         st.warning("Columns 'Vegetation' or 'FireSize' are missing from the dataset.")
+
 
 
 
@@ -949,8 +1017,18 @@ elif page == "Predict Page":
         if not skip_containment:
             
             # User provides containment date via calendar input
-            containment_date = st.date_input("Containment Date", min_value=discovery_date, value=datetime.date.today(), key="containment_date")
-        # Extract year, month, and day for containment date
+            # Ensure the default value is within the valid range
+            today = datetime.date.today()
+            default_containment_date = today if discovery_date <= today else discovery_date
+
+            containment_date = st.date_input(
+                "Containment Date", 
+                min_value=discovery_date, 
+                value=default_containment_date, 
+                key="containment_date"
+            )
+
+                # Extract year, month, and day for containment date
             containment_year = containment_date.year
             containment_month = containment_date.month
             containment_day = containment_date.day
