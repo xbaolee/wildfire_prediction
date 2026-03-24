@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import requests
 import pandas as pd
@@ -5,26 +6,28 @@ import folium
 from streamlit_folium import st_folium
 from joblib import load
 import datetime
-#import os
 from geopy.distance import geodesic
 import uuid
 import pandas as np
 import joblib
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load secret keys from environment / streamlit secrets
+API_KEY = os.getenv("WEATHER_API_KEY", st.secrets.get("WEATHER_API_KEY", ""))
+OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY", st.secrets.get("OPENWEATHERMAP_API_KEY", ""))
+OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY", st.secrets.get("OPENCAGE_API_KEY", ""))
+
+if not API_KEY or not OPENWEATHERMAP_API_KEY or not OPENCAGE_API_KEY:
+    st.warning("Missing API keys. Set WEATHER_API_KEY, OPENWEATHERMAP_API_KEY, OPENCAGE_API_KEY in environment or Streamlit secrets.")
+
+
 import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 import seaborn as sns
 import scipy.stats as stats
-
-# Constants
-#API_KEY = os.getenv("WEATHER_API_KEY")  # Use environment variable for API key
-API_KEY = "231771a51df34a8db2952122242612"
-OPENWEATHERMAP_API_KEY = "9eb33c79be718292d16ec0c6bb82de86"
-#OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY") 
-OPENCAGE_API_KEY = "53a91cfacb1b486e9e14cd965fb4dcb5"  # Replace with your OpenCage API key
-
-
 import torch
 import torch.nn as nn
 
@@ -45,8 +48,8 @@ class DNN(nn.Module):
     def forward(self, x):
         return self.network(x)
     
-pipeline_cls = joblib.load("preprocessing_pipeline_cls_last.pkl")
-best_params = joblib.load("dnn_best_params.pkl")
+pipeline_cls = joblib.load(os.path.join(BASE_DIR, "preprocessing_pipeline_cls_last.pkl"))
+best_params = joblib.load(os.path.join(BASE_DIR, "dnn_best_params.pkl"))
 
 # Initialize the model with best parameters
 model = DNN(
@@ -56,7 +59,8 @@ model = DNN(
 )
 
 # Load the model weights
-model.load_state_dict(torch.load("dnn_model_last.pth"))
+model_path = os.path.join(BASE_DIR, "dnn_model_last.pth")
+model.load_state_dict(torch.load(model_path, map_location="cpu"))
 model.eval()  # Set model to evaluation mode
 
 def predict(input_data):
